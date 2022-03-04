@@ -1,0 +1,347 @@
+/* 31/01/2011 by J meech. 	
+`		Simple autoplace ulp based upon component position in schematic
+* 	 	this ULp was origianlly written by one of the CADSOFT team I believe
+* 		pologies for lack of full reference and acknoledgement
+* 		run the ULP in the sch window and run place.scr in BRD
+* 		changing the scale parameter will produce tighter/looser grouping
+* 		Dialogue added to set sheet, scale 7 X,Y offset for the sheet of choice.  31/01/2011 by J meech.
+* 		.ini file added to store the last settings to aid interactive placement.  31/01/2011 by J meech.
+*
+* 31/12/2021 updated/enhanced by Q. Meek 
+*		Re-written to handle new features
+*		Features:
+*		- Selected schematic sheet of schematic layed out per run.
+*		- Schematic size calculated - smallest rectangle to contain all parts on selected sheet.
+*		- Board size calculated from existing board dimension lines and reduced by user supplied border.
+*		- The program scales down Scematic and places parts in same relative  positions as schematic
+*		- User xan scale down smaller than full board size and shift resulting layout right and up 
+*		  This allows for place sheets of parts in areas of the board. 
+*	
+*/
+#usage "<b>Schematic mapped auto-place</b>\n"
+       "<p>Run this ULP from Schematic CLI</p>\n"
+       "<author>Latest Author: QuentinMeek, qzic@axion.ca</author>\n"
+       
+// Start of executable program.
+// variables in ini file	
+int page;
+int margin;
+real scaleX_user;
+real scaleY_user;
+real shiftX;
+real shiftY;
+int offBoardOnly;
+
+//local vaiables
+int HasPins;
+int IsSupplySymbol;
+int Instance_x; 
+int Instance_y; 
+int Element_x;
+int Element_y;
+int Sch_Max_Instance_x;
+int Sch_Offset_X;
+int Sch_Max_Instance_y;
+int Sch_Offset_Y;
+real boardWidth;
+real boardHeight;
+real Schematic_width;
+real Schematic_height;
+
+int xoffset; 
+int yoffset;
+int marginX;
+int marginY;
+real scaleX;
+real scaleY;
+
+int ix;
+int Result =1;
+int GridDist = 50; 
+
+string fps[];
+string flines[];
+string c,cmd;
+string fnam;                           //ini file name
+string gnam;                           //generic files name
+string name;                           //scratch object name string	
+
+
+//----------------------------------------------------------------------------
+project.schematic (sch) {              //open the schematic
+  fnam = sch.name;                     //get initial output file name from schematic
+  }
+gnam = filesetext (fnam, "");          //remove .SCH file name suffix
+fnam = gnam + "_aps";                //add to base name to indicate parts list
+fnam = filesetext (fnam, ".ini");      //change to .ini file type
+// search for ini file
+int fp = fileglob(fps,fnam);
+if(fp==1){ // use previous values
+	fileread(flines,fnam);
+	page = strtol(flines[0]);
+	margin = strtol(flines[1]);
+	scaleX_user = strtod(flines[2]);
+	scaleY_user = strtod(flines[3]);
+	shiftX = strtod(flines[4]);
+	shiftY = strtod(flines[5]);
+	offBoardOnly = strtol(flines[6]); 
+	
+	} // load values from ini file
+else { // else use default values
+	page = 1;
+	margin = 150;
+	scaleX_user = 100.0;
+	scaleY_user = 100.0;		
+	shiftX = 0.0;
+	shiftY = 0.0;
+	offBoardOnly = 0;
+	} 
+	
+//----------------------------------------------------------------------------
+// Open dialog, get params
+Result = dlgDialog("Sheet autoplace"){
+	dlgHBoxLayout dlgSpacing(400);
+	dlgHBoxLayout {
+		dlgSpacing(10);
+		dlgVBoxLayout {
+		    dlgSpacing(10);
+			dlgGridLayout {
+				dlgCell(0,0)dlgLabel("<b>Schematic Sheet Number<b>");
+				dlgCell(1,0) dlgIntEdit(page, 1, 99);
+				dlgCell(0,1)dlgLabel("<b>Board Margin (1-500mil)<b>");
+				dlgCell(1,1) dlgIntEdit(margin, 1, 500);
+			}
+			dlgSpacing(15);
+			dlgStretch(0);
+			dlgLabel("<b>ALL SCALING and SHIFTING % VALUES BELOW REFER TO<b>");
+			dlgLabel("<b>THE % OF AVAIL BOARD LAYOUT SPACE <b>");
+			dlgSpacing(10);
+			dlgGridLayout {
+				dlgCell(0,0)dlgLabel("<b>Scale X layout: 10-100%<b>");
+				dlgCell(1,0) dlgRealEdit (scaleX_user,0,100);
+			
+				dlgCell(0,1)dlgLabel("<b>Scale Y layout size: 10-100%<b>");
+				dlgCell(1,1) dlgRealEdit (scaleY_user,0,100);
+			
+						
+				dlgCell(2,0)dlgLabel("<b>Shift layout right 0-100%<b>");
+				dlgCell(3,0) dlgRealEdit (shiftX,0,100);
+			
+				dlgCell(2,1)dlgLabel("<b>Shift layout up  0-100%<b>");
+				dlgCell(3,1) dlgRealEdit (shiftY,0,100);
+	
+				dlgCell(4,0) dlgCheckBox("Layout only off-board parts", offBoardOnly);
+		  		}
+		  	dlgSpacing(15);
+			dlgVBoxLayout {
+			        dlgPushButton("+OK") dlgAccept();
+			        dlgPushButton("-Cancel") dlgReject();
+				}
+			dlgSpacing(10);
+			}
+		dlgSpacing(10);
+		}
+	};
+if (Result == 0) exit (0);
+marginX = margin;
+marginY = margin;
+
+// open the init file, save user params
+output (fnam, "wt") {  
+	printf("%d", page);
+	printf ("\n");
+	printf("%d",margin);
+	printf ("\n");
+	printf("%f", scaleX_user);
+	printf ("\n");
+	printf("%f", scaleY_user);
+	printf ("\n");
+	printf("%f", shiftX);
+	printf ("\n");
+	printf("%f", shiftY);
+	printf ("\n");
+	printf("%d", offBoardOnly);
+	printf ("\n");
+	}
+	
+//----------------------------------------------------------------------------
+// function to print to multiline dialog for debugging
+void debugP(string s) {
+	int Result = dlgDialog("Debug Info"){
+		dlgVBoxLayout {
+			dlgStretch(1);
+			dlgTextView(s);
+			dlgStretch(0);
+			}
+		dlgHBoxLayout {
+	        dlgStretch(1);
+	        dlgPushButton("+OK") dlgAccept();
+	        dlgPushButton("-Cancel") dlgReject();
+	        dlgStretch(0);
+			}
+		}; 
+	if (Result == 0) exit (0);	
+}
+
+real minLength;
+int bestAngle;
+string curEname = "";
+int lengthCnt = 0;
+int lengths[];
+
+UL_PART pMinX,pMaxX,pMinY,pMaxY;
+
+
+//----------------------------------------------------------------------------
+output(path_ulp[0] + "/a_place.scr") {
+    if (schematic) schematic(SCH) {
+		cmd+= "board; \n";
+//        sprintf(c, );
+		cmd+= "Grid mil 50; \n";
+		
+		// Find schematic x,y offsets from origin and X, Y extents (min sized rectangle enclosing all parts) 
+			Sch_Max_Instance_x = -1000000;
+			Sch_Offset_X = 	 	  1000000;
+			Sch_Max_Instance_y = -1000000;
+			Sch_Offset_Y = 	 	  1000000;
+		SCH.sheets(S) {
+	        S.parts(P) {
+	            ix = 0;
+	            P.instances(I) {
+	            	if (ix==0) {
+	                	Instance_x = round(u2mil(I.x) / GridDist) * GridDist;
+	                    Instance_y = round(u2mil(I.y) / GridDist) * GridDist;
+	                    } 
+	            	HasPins = 0;
+	                IsSupplySymbol = 0;
+	            	I.gate.symbol.pins(PIN) { 
+	            		if ((PIN.direction == PIN_DIRECTION_SUP)) IsSupplySymbol = 1;
+	                	HasPins = 1;
+	               		}
+	               	// ------------------------------------------------------------	
+	               	// This section attempte to account for package size in schematic
+	               	// so pads are kept on board
+//	               	int maxX = 0;
+//	               	int maxY = 0;
+//	               	project.board(B) {
+//	               		B.elements(E) {
+//	               			if(I.name == E.name) {
+//	               				maxX = 0;
+//	               				maxY = 0;
+//	               				E.package.contacts(C) {
+//	               					if(C.name != "") {
+//               						if(C.x - E.x > maxX) maxX = C.x-E.x;
+//               						if(C.y - E.y > maxY) maxY = C.y-E.y;
+//               					}
+//               					}
+//	               			}
+//	               		}
+//	               	}
+//	               	Instance_x += abs(maxX/20000);
+//	               	Instance_y += abs(maxY/20000);
+	               	// -----------------------------------------------------------
+	               	
+		             if (HasPins && !IsSupplySymbol) {
+		            	if(Instance_x > Sch_Max_Instance_x) {
+		            		Sch_Max_Instance_x = Instance_x;
+		            		pMaxX = P;
+		            	}
+		           		if(Instance_y > Sch_Max_Instance_y) {
+		           			Sch_Max_Instance_y = Instance_y;
+		           			pMaxY = P;
+		           		}
+		            	if(Instance_x < Sch_Offset_X) {
+		            		Sch_Offset_X = Instance_x;
+		            		pMinX = P;
+		            	}
+		          		if(Instance_y < Sch_Offset_Y) {
+		          			Sch_Offset_Y = Instance_y;
+		          			pMinY = P;
+		          		}
+	           			}
+	           		ix++;
+	           		}
+       			} // end parts
+			}   // end sheets 
+		
+		Schematic_width = Sch_Max_Instance_x-Sch_Offset_X;
+		Schematic_height = Sch_Max_Instance_y-Sch_Offset_Y;
+		
+		// Get board size assuming bottom left corner is at 0,0
+		boardWidth  = 0;
+		boardHeight = 0;
+		project.board(B) {
+			B.layers(L) {
+				if(L.number == LAYER_DIMENSION) {
+					B.wires(W){
+						Element_x = u2mil(W.x1);
+						Element_y = u2mil(W.y1);
+						if(Element_x > boardWidth) boardWidth = Element_x;
+						if(Element_y > boardHeight) boardHeight = Element_y;
+						Element_x = u2mil(W.x2);
+						Element_y = u2mil(W.y2);
+						if(Element_x > boardWidth) boardWidth = Element_x;
+						if(Element_y > boardHeight) boardHeight = Element_y;						
+					}
+				}
+			}
+		}
+		// calculate scale factor allowing for left/right/top/bottom margins to fit board 
+		// and add additional scaling if smaller size desired
+		scaleX = ((boardWidth-2 * marginX)/Schematic_width) * (scaleX_user/100.0);	
+		scaleY = ((boardHeight-2* marginY)/Schematic_height)* (scaleY_user/100.0);
+		
+		xoffset = (shiftX/100.0 * (boardWidth-2 * marginX));
+		xoffset = round(u2mil(xoffset) / GridDist) * GridDist;
+	    yoffset = (shiftY/100.0 * (boardHeight-2* marginY));	
+	    yoffset = round(u2mil(yoffset) / GridDist) * GridDist;
+		
+//		sprintf(c, "Sch_Offset_X %d Sch_Offset_Y %d \nboardWidth %f  boardHeight  %f \nSchematic_width %f Schematic_height %f \nscaleX %f  scaleY %f", Sch_Offset_X,Sch_Offset_Y,boardWidth, boardHeight, Schematic_width, Schematic_height, scaleX, scaleY);
+//		debugP(c);
+			
+        SCH.sheets(S) {
+	        S.parts(P) {
+	            ix = 0;
+	            P.instances(I) {
+//	            	if(!offBoardOnly && (I.x < 0 || I.y < 0)) {
+//	            		dlgMessageBox("No parts are offBoard, uncheck box to re-layout on-board parts");
+//	            		exit(0);
+//	            		} 
+//	            	else {
+		            	if (ix==0) {
+		                	Instance_x = round(scaleX*(u2mil(I.x)-Sch_Offset_X) / GridDist) * GridDist;
+		                    Instance_y = round(scaleY*(u2mil(I.y)-Sch_Offset_Y) / GridDist) * GridDist;
+		                    } 
+		            	HasPins = 0;
+		                IsSupplySymbol = 0;
+		            	I.gate.symbol.pins(PIN) { 
+		            		if ((PIN.direction == PIN_DIRECTION_SUP)) 
+		                		IsSupplySymbol = 1;
+		                		HasPins = 1;
+		               		}
+		           		ix++;
+//		            	}
+		            if (HasPins && !IsSupplySymbol) {		
+		            	if (S.number == page) {
+		            		sprintf(c, "Move %s (%d %d);\n", P.name, Instance_x+marginX+xoffset, Instance_y+marginY+yoffset);
+							}
+						cmd+= c;
+	           		}
+           		}
+       		} // end parts
+        }   // end sheets 
+	
+
+		sprintf(c,"RATSNEST;\n");
+		cmd += c;
+		sprintf(c,"\nWINDOW (%f %f) (%f %f);\n",0.0-marginX,0.0-marginY,boardWidth+marginX,boardHeight+marginY);
+		cmd += c;
+		cmd += "GRID LAST;\n";
+	}
+	// open the init file, save user params
+output (path_ulp[0] + "/ap.scr", "wt") {  
+	printf("%s", cmd);
+	}
+}
+
+exit(cmd);
